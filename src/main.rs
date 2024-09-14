@@ -7,6 +7,8 @@ use std::sync::Mutex;
 use std::time;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 const URL: &str = "https://erlangen.de/themenseite/service/buerger/aktuelle-wartezeit";
 const BLOCK_SELECTOR: &str = ".fr-view";
@@ -30,7 +32,8 @@ struct DataFrame {
     drivers_license_services: QueueDataFrame,
     cached: bool,
     scrape_duration: Duration,
-    created: Instant,
+    created_instant: Instant,
+    created_timestamp: Duration,
 }
 
 struct Server {
@@ -168,13 +171,16 @@ fn scrape() -> Result<DataFrame, String> {
         drivers_license_services: data_frames[1].clone(),
         scrape_duration: time::Instant::now() - start,
         cached: false,
-        created: Instant::now(),
+        created_instant: Instant::now(),
+        created_timestamp: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::new(0, 0)),
     })
 }
 
 fn metrics() -> Result<String, String> {
     let mut cache = CACHED_FRAME.lock().unwrap();
-    let data = if cache.is_some() && cache.clone().unwrap().created > Instant::now() - CACHE_EXPIRATION {
+    let data = if cache.is_some() && cache.clone().unwrap().created_instant > Instant::now() - CACHE_EXPIRATION {
         cache.clone().unwrap()
     } else {
         let data = scrape()?;
@@ -198,6 +204,7 @@ fn metrics() -> Result<String, String> {
     response.push('\n');
     response.push_str(&format!("erth_cached\t{}\n", data.cached as i64));
     response.push_str(&format!("erth_scrape_duration\t{}\n", data.scrape_duration.as_millis()));
+    response.push_str(&format!("erth_scrape_timestamp\t{}\n", data.created_timestamp.as_millis()));
 
     Ok(response)
 }
