@@ -11,37 +11,67 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 
+/// URL to be scraped
 const URL: &str = "https://erlangen.de/themenseite/service/buerger/aktuelle-wartezeit";
+/// CSS selector for the queue blocks
 const BLOCK_SELECTOR: &str = ".fr-view";
-const LINE_SELECTOR: &str = ".flex>span";
+/// CSS selector for the data values
+const VALUE_SELECTOR: &str = ".flex>span";
+/// Filter for queue blocks
 const BLOCK_CONTENT_FILTER: &str = "Wartende Personen";
+/// Supported HTTP version
 const HTTP_VERSION: &str = "HTTP/1.1";
+/// Time-to-live for [cached](CACHED_FRAME) data frames
 const CACHE_EXPIRATION: Duration = Duration::from_secs(30);
 
+/// Cache the last successful request
+///
+/// The cache expiration behavior is specified by [`CACHE_EXPIRATION`] and is calculated based on
+/// the field [`DataFrame::created_instant`].
 static CACHED_FRAME: Mutex<Option<DataFrame>> = Mutex::new(None);
 
 
+/// Data frame capturing the queue information for one specific queue in the town hall
 #[derive(Debug,Clone)]
 struct QueueDataFrame {
+    /// Number of people waiting in line ("Wartende Personen").
     people_waiting: u64,
+
+    /// Last called ticket ("Aktuelle Aufrufnummer").
     last_called_ticket: i64,
+
+    /// Waiting time estimation in minutes ("Durchschnittliche Wartezeit").
     waiting_time_estimation: u64,
 }
 
+/// Data frame containing all information at a specific point in time
 #[derive(Debug,Clone)]
 struct DataFrame {
+    /// Data frame for citizen services ("Bürgerservice").
     citizen_services: QueueDataFrame,
+
+    /// Data frame for drivers-license services ("Fahrerlaubnisangelegenheiten").
     drivers_license_services: QueueDataFrame,
+
+    /// Whether this data frame is part of the [cache](CACHED_FRAME).
     cached: bool,
+
+    /// How long it took to scrape the data.
     scrape_duration: Duration,
+
+    /// The [Instant] that the data frame was created (monotonic).
     created_instant: Instant,
+
+    /// The timestamp that the data frame was created (non-monotonic), based on [UNIX_EPOCH].
     created_timestamp: Duration,
 }
 
+/// Serves queue data over http
 struct Server {
     listener: TcpListener,
 }
 
+/// Http responses
 enum ResponseType {
     Ok,
     BadRequest,
@@ -50,12 +80,14 @@ enum ResponseType {
 
 
 impl Server {
+    /// Bind the server on a specific address
     pub fn init(addr: &str) -> io::Result<Self> {
         Ok(Server {
             listener: TcpListener::bind(addr)?,
         })
     }
 
+    /// Game-loop for the server
     pub fn run(&mut self) {
         for stream in self.listener.incoming() {
             if let Ok(stream) = stream {
@@ -66,6 +98,7 @@ impl Server {
         }
     }
 
+    /// Serve a request
     fn handle_connection(&self, stream: TcpStream) -> io::Result<()> {
         let reader = BufReader::new(&stream);
         let request_line = match reader.lines().next() {
@@ -97,6 +130,7 @@ impl Server {
         }
     }
 
+    /// Send a response to the client
     fn send_response(mut stream: TcpStream, response_type: ResponseType,
                         headers: HashMap<&str, &str>, content: Option<&str>) -> io::Result<()> {
         use ResponseType::*;
@@ -130,6 +164,7 @@ impl Server {
 }
 
 
+/// Scrape new information from the town-hall website
 fn scrape() -> Result<DataFrame, String> {
     let start = Instant::now();
     let response = reqwest::blocking::get(URL)
@@ -140,7 +175,7 @@ fn scrape() -> Result<DataFrame, String> {
 
     let block_selector = scraper::Selector::parse(BLOCK_SELECTOR)
         .map_err(|e| e.to_string())?;
-    let line_selector = scraper::Selector::parse(LINE_SELECTOR)
+    let line_selector = scraper::Selector::parse(VALUE_SELECTOR)
         .map_err(|e| e.to_string())?;
 
     let blocks = document.select(&block_selector)
@@ -180,6 +215,9 @@ fn scrape() -> Result<DataFrame, String> {
     })
 }
 
+/// Create a metrics string in the [Prometheus data format](https://prometheus.io/docs/instrumenting/writing_exporters/).
+///
+/// Metrics are taken either from [cache](CACHED_FRAME) or are [freshly scraped](scrape).
 fn metrics() -> Result<String, String> {
     let mut cache = CACHED_FRAME.lock().unwrap();
     let data = if cache.is_some() && cache.clone().unwrap().created_instant > Instant::now() - CACHE_EXPIRATION {
