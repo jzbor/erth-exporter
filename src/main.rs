@@ -192,7 +192,7 @@ fn scrape() -> Result<DataFrame, String> {
 
         let people_waiting = str::parse(&values[0])
             .map_err(|_| String::from("cannot parse waiting persons"))?;
-        let last_called_ticket = str::parse(&values[1])
+        let last_called_ticket = str::parse(&values[1].replace(&['B', 'F'][..], ""))
             .map_err(|_| String::from("cannot parse current number"))?;
         let waiting_time_estimation = str::parse(&values[2].strip_suffix(" Minuten").unwrap_or(&values[2]))
             .map_err(|_| String::from("cannot parse waiting-time estimation"))?;
