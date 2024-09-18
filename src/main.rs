@@ -28,24 +28,27 @@ const CACHE_EXPIRATION: Duration = Duration::from_secs(30);
 
 /// Specifies the type of a ticket, which may be either for citizens services, drivers-license
 /// services or an invalid amount used during off-hours
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug,Clone,Copy,Eq,PartialEq,Hash)]
 enum TicketType { B, F, None }
 
 /// Represents a ticket in the town hall
-#[derive(Debug,Clone,Copy)]
-struct Ticket(TicketType, i64);
+#[derive(Debug,Clone,Copy,Eq,PartialEq,Hash)]
+struct Ticket(TicketType, usize);
 
 /// Data frame capturing the queue information for one specific queue in the town hall
 #[derive(Debug,Clone)]
 struct QueueDataFrame {
     /// Number of people waiting in line ("Wartende Personen").
-    people_waiting: u64,
+    people_waiting: usize,
 
     /// Last called ticket ("Aktuelle Aufrufnummer").
     last_called_ticket: Ticket,
 
     /// Waiting time estimation in minutes ("Durchschnittliche Wartezeit").
-    waiting_time_estimation: u64,
+    waiting_time_estimation: usize,
+
+    /// Waiting time as tracked by the scraper (see [Scraper::ticket_tracker])
+    tracked_waiting_time: Option<Duration>
 }
 
 /// Data frame containing all information at a specific point in time
@@ -77,6 +80,9 @@ struct Scraper {
     /// The cache expiration behavior is specified by [`CACHE_EXPIRATION`] and is calculated based on
     /// the field [`DataFrame::created_instant`].
     cache: Option<DataFrame>,
+
+    /// Tracks currently open tickets to determine their waiting time
+    ticket_tracker: HashMap<Ticket, Instant>,
 }
 
 /// Serves queue data over http
@@ -197,7 +203,8 @@ impl Server {
 impl Scraper {
     fn new() -> Self {
         Scraper {
-            cache: None
+            cache: None,
+            ticket_tracker: HashMap::new(),
         }
     }
 
@@ -209,7 +216,7 @@ impl Scraper {
         let data = if self.cache.is_some() && self.cache.as_ref().unwrap().created_instant > Instant::now() - CACHE_EXPIRATION {
             self.cache.clone().unwrap()
         } else {
-            let data = Self::scrape()?;
+            let data = self.scrape()?;
             self.cache.insert(data.clone())
                 .cached = true;
             data
@@ -227,6 +234,9 @@ impl Scraper {
             None => (),
         }
         response.push_str(&format!("erth_waiting_time{{service=\"citizen\"}}\t\t{}\n", data.citizen_services.waiting_time_estimation));
+        if let Some(tracked_waiting_time) = data.citizen_services.tracked_waiting_time {
+            response.push_str(&format!("erth_tracked_waiting_time{{service=\"citizen\"}}\t\t{}\n", tracked_waiting_time.as_secs()));
+        }
 
         response.push_str("\n# Information on the drivers-license service\n");
         response.push_str(&format!("erth_people_waiting{{service=\"drivers_license\"}}\t\t{}\n", data.drivers_license_services.people_waiting));
@@ -238,10 +248,13 @@ impl Scraper {
             None => (),
         }
         response.push_str(&format!("erth_waiting_time{{service=\"drivers_license\"}}\t\t{}\n", data.drivers_license_services.waiting_time_estimation));
-
+        if let Some(tracked_waiting_time) = data.drivers_license_services.tracked_waiting_time {
+            response.push_str(&format!("erth_tracked_waiting_time{{service=\"drivers_license\"}}\t\t{}\n", tracked_waiting_time.as_secs()));
+        }
 
         response.push_str("\n# Meta information\n");
         response.push_str(&format!("erth_cached\t\t{}\n", data.cached as i64));
+        response.push_str(&format!("erth_tracked_tickets\t{}\n", self.ticket_tracker.len()));
         response.push_str(&format!("erth_scrape_duration\t{}\n", data.scrape_duration.as_millis()));
         response.push_str(&format!("erth_scrape_timestamp\t{}\n", data.created_timestamp.as_millis()));
 
@@ -249,7 +262,7 @@ impl Scraper {
     }
 
     /// Scrape new information from the town-hall website
-    fn scrape() -> Result<DataFrame, String> {
+    fn scrape(&mut self) -> Result<DataFrame, String> {
         let start = Instant::now();
         let response = reqwest::blocking::get(URL)
             .map_err(|e| e.to_string())?
@@ -281,11 +294,24 @@ impl Scraper {
             let waiting_time_estimation = str::parse(&values[2].strip_suffix(" Minuten").unwrap_or(&values[2]))
                 .map_err(|_| String::from("cannot parse waiting-time estimation"))?;
 
-            data_frames.push(QueueDataFrame { people_waiting, last_called_ticket, waiting_time_estimation });
+            data_frames.push(QueueDataFrame {
+                people_waiting, last_called_ticket, waiting_time_estimation,
+                tracked_waiting_time: None,
+            });
         }
+
         if data_frames.len() < 2 {
             return Err(String::from("not enough data blocks"));
         }
+
+        data_frames[0].tracked_waiting_time = self.update_tracker(
+            data_frames[0].last_called_ticket,
+            data_frames[0].people_waiting,
+            TicketType::B);
+        data_frames[1].tracked_waiting_time = self.update_tracker(
+            data_frames[1].last_called_ticket,
+            data_frames[1].people_waiting,
+            TicketType::F);
 
         Ok(DataFrame {
             citizen_services: data_frames[0].clone(),
@@ -297,6 +323,26 @@ impl Scraper {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::new(0, 0)),
         })
+    }
+
+    // Update the integrated ticket waiting time tracker and return the latest waiting time
+    fn update_tracker(&mut self, ticket: Ticket, queue_length: usize, expected_ticket_type: TicketType) -> Option<Duration> {
+        if ticket.0 == TicketType::None {
+            // clean up ticket tracker after the numbers have reset
+            self.ticket_tracker.retain(|k, _| k.0 != expected_ticket_type);
+            return None;
+        } else if ticket.0 != expected_ticket_type {
+            // ignore foreign tickets
+            return None;
+        }
+
+        let ret = self.ticket_tracker.get(&ticket)
+            .map(|i| Instant::now() - *i);
+
+        let new_ticket = Ticket(ticket.0, ticket.1 + queue_length);
+        self.ticket_tracker.entry(new_ticket).or_insert_with(|| Instant::now());
+
+        ret
     }
 }
 
