@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::io::BufReader;
 use std::io::prelude::*;
 use std::io;
@@ -31,6 +32,15 @@ const CACHE_EXPIRATION: Duration = Duration::from_secs(30);
 static CACHED_FRAME: Mutex<Option<DataFrame>> = Mutex::new(None);
 
 
+/// Specifies the type of a ticket, which may be either for citizens services, drivers-license
+/// services or an invalid amount used during off-hours
+#[derive(Debug,Clone,Copy)]
+enum TicketType { B, F, None }
+
+/// Represents a ticket in the town hall
+#[derive(Debug,Clone,Copy)]
+struct Ticket(TicketType, i64);
+
 /// Data frame capturing the queue information for one specific queue in the town hall
 #[derive(Debug,Clone)]
 struct QueueDataFrame {
@@ -38,7 +48,7 @@ struct QueueDataFrame {
     people_waiting: u64,
 
     /// Last called ticket ("Aktuelle Aufrufnummer").
-    last_called_ticket: i64,
+    last_called_ticket: Ticket,
 
     /// Waiting time estimation in minutes ("Durchschnittliche Wartezeit").
     waiting_time_estimation: u64,
@@ -78,6 +88,22 @@ enum ResponseType {
     NotFound,
 }
 
+
+impl Ticket {
+    fn parse(s: &str) -> Result<Self, ()> {
+        use TicketType::*;
+        let t = match s.chars().next() {
+            Some('B') => B,
+            Some('F') => F,
+            _ => TicketType::None,
+        };
+
+        match t {
+            B | F => Ok(Ticket(t, str::parse(&s[1..]).map_err(|_| ())?)),
+            None => Ok(Ticket(None, 0)),
+        }
+    }
+}
 
 impl Server {
     /// Bind the server on a specific address
@@ -163,6 +189,17 @@ impl Server {
     }
 }
 
+impl Display for TicketType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use TicketType::*;
+        match self {
+            B => write!(f, "B"),
+            F => write!(f, "F"),
+            None => write!(f, "N/A"),
+        }
+    }
+}
+
 
 /// Scrape new information from the town-hall website
 fn scrape() -> Result<DataFrame, String> {
@@ -192,8 +229,8 @@ fn scrape() -> Result<DataFrame, String> {
 
         let people_waiting = str::parse(&values[0])
             .map_err(|_| String::from("cannot parse waiting persons"))?;
-        let last_called_ticket = str::parse(&values[1].replace(&['B', 'F'][..], ""))
-            .map_err(|_| String::from("cannot parse current number"))?;
+        let last_called_ticket = Ticket::parse(&values[1])
+            .map_err(|_| String::from("cannot parse current ticket"))?;
         let waiting_time_estimation = str::parse(&values[2].strip_suffix(" Minuten").unwrap_or(&values[2]))
             .map_err(|_| String::from("cannot parse waiting-time estimation"))?;
 
@@ -219,6 +256,7 @@ fn scrape() -> Result<DataFrame, String> {
 ///
 /// Metrics are taken either from [cache](CACHED_FRAME) or are [freshly scraped](scrape).
 fn metrics() -> Result<String, String> {
+    use TicketType::*;
     let mut cache = CACHED_FRAME.lock().unwrap();
     let data = if cache.is_some() && cache.clone().unwrap().created_instant > Instant::now() - CACHE_EXPIRATION {
         cache.clone().unwrap()
@@ -233,12 +271,24 @@ fn metrics() -> Result<String, String> {
 
     response.push_str("# Information on the citizen service\n");
     response.push_str(&format!("erth_people_waiting{{service=\"citizen\"}}\t\t{}\n", data.citizen_services.people_waiting));
-    response.push_str(&format!("erth_last_called_ticket{{service=\"citizen\"}}\t{}\n", data.citizen_services.last_called_ticket));
+    match data.citizen_services.last_called_ticket.0 {
+        B |F => response.push_str(&format!(
+            "erth_last_called_ticket{{service=\"citizen\",type=\"{}\"}}\t{}\n",
+            data.citizen_services.last_called_ticket.0,
+            data.citizen_services.last_called_ticket.1)),
+        None => (),
+    }
     response.push_str(&format!("erth_waiting_time{{service=\"citizen\"}}\t\t{}\n", data.citizen_services.waiting_time_estimation));
 
     response.push_str("\n# Information on the drivers-license service\n");
     response.push_str(&format!("erth_people_waiting{{service=\"drivers_license\"}}\t\t{}\n", data.drivers_license_services.people_waiting));
-    response.push_str(&format!("erth_last_called_ticket{{service=\"drivers_license\"}}\t{}\n", data.drivers_license_services.last_called_ticket));
+    match data.drivers_license_services.last_called_ticket.0 {
+        B |F => response.push_str(&format!(
+            "erth_last_called_ticket{{service=\"drivers_license\",type=\"{}\"}}\t{}\n",
+            data.drivers_license_services.last_called_ticket.0,
+            data.drivers_license_services.last_called_ticket.1)),
+        None => (),
+    }
     response.push_str(&format!("erth_waiting_time{{service=\"drivers_license\"}}\t\t{}\n", data.drivers_license_services.waiting_time_estimation));
 
 
