@@ -333,17 +333,21 @@ impl Scraper {
 
     // Update the integrated ticket waiting time tracker and return the latest waiting time
     fn update_tracker(&mut self, ticket: Ticket, queue_length: usize, expected_ticket_type: TicketType) {
+        let last_tracked_waiting_time = {
+            match expected_ticket_type {
+                TicketType::B => &mut self.last_tracked_waiting_time[0],
+                TicketType::F => &mut self.last_tracked_waiting_time[1],
+                TicketType::None => return,
+            }
+        };
+
         if ticket.0 != expected_ticket_type {
             // ignore foreign tickets
             return;
         } else if ticket.0 == TicketType::None {
             // clean up ticket tracker after the numbers have reset
             self.ticket_tracker.retain(|k, _| k.0 != expected_ticket_type);
-            match expected_ticket_type {
-                TicketType::B => self.last_tracked_waiting_time[0] = None,
-                TicketType::F => self.last_tracked_waiting_time[1] = None,
-                TicketType::None => (),
-            }
+            *last_tracked_waiting_time = None;
             return;
         }
 
@@ -352,17 +356,9 @@ impl Scraper {
             .map(|i| Instant::now() - i);
 
         if current_tracked.is_some() {
-            match expected_ticket_type {
-                TicketType::B => self.last_tracked_waiting_time[0] = current_tracked,
-                TicketType::F => self.last_tracked_waiting_time[1] = current_tracked,
-                TicketType::None => (),
-            }
-        } else if self.ticket_tracker.is_empty() {  // There is no waiting time if there aren't any tickets
-            match expected_ticket_type {
-                TicketType::B => self.last_tracked_waiting_time[0] = None,
-                TicketType::F => self.last_tracked_waiting_time[1] = None,
-                TicketType::None => (),
-            }
+            *last_tracked_waiting_time = current_tracked;
+        } else if queue_length == 0 {
+            *last_tracked_waiting_time = Some(Duration::new(0, 0))
         }
 
         if queue_length > 0 {
