@@ -333,7 +333,10 @@ impl Scraper {
 
     // Update the integrated ticket waiting time tracker and return the latest waiting time
     fn update_tracker(&mut self, ticket: Ticket, queue_length: usize, expected_ticket_type: TicketType) {
-        if ticket.0 == TicketType::None {
+        if ticket.0 != expected_ticket_type {
+            // ignore foreign tickets
+            return;
+        } else if ticket.0 == TicketType::None {
             // clean up ticket tracker after the numbers have reset
             self.ticket_tracker.retain(|k, _| k.0 != expected_ticket_type);
             match expected_ticket_type {
@@ -341,9 +344,6 @@ impl Scraper {
                 TicketType::F => self.last_tracked_waiting_time[1] = None,
                 TicketType::None => (),
             }
-            return;
-        } else if ticket.0 != expected_ticket_type {
-            // ignore foreign tickets
             return;
         }
 
@@ -365,8 +365,10 @@ impl Scraper {
             }
         }
 
-        let new_ticket = Ticket(ticket.0, ticket.1 + queue_length);
-        self.ticket_tracker.entry(new_ticket).or_insert_with(|| Instant::now());
+        if queue_length > 0 {
+            let new_ticket = Ticket(ticket.0, ticket.1 + queue_length);
+            self.ticket_tracker.entry(new_ticket).or_insert_with(|| Instant::now());
+        }
     }
 }
 
