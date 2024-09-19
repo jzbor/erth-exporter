@@ -153,7 +153,7 @@ checksum = "12a0bb14ac04a9fcf170d0bbbef949b44cc492f4452bd20c095636956f653642"
 
 [[package]]
 name = "erth-exporter"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "reqwest",
  "scraper",
