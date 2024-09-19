@@ -84,6 +84,7 @@ struct Scraper {
     /// Tracks currently open tickets to determine their waiting time
     ticket_tracker: HashMap<Ticket, Instant>,
 
+    /// Remembers the last tracked waiting time to reproduce on [Scraper::metrics]
     last_tracked_waiting_time: [Option<Duration>; 2],
 }
 
@@ -238,7 +239,7 @@ impl Scraper {
         }
         response.push_str(&format!("erth_waiting_time{{service=\"citizen\"}}\t\t{}\n", data.citizen_services.waiting_time_estimation));
         if let Some(tracked_waiting_time) = data.citizen_services.tracked_waiting_time {
-            response.push_str(&format!("erth_tracked_waiting_time{{service=\"citizen\"}}\t\t{}\n", tracked_waiting_time.as_secs()));
+            response.push_str(&format!("erth_tracked_waiting_time{{service=\"citizen\"}}\t\t{}\n", tracked_waiting_time.as_secs() / 60));
         }
 
         response.push_str("\n# Information on the drivers-license service\n");
@@ -252,7 +253,7 @@ impl Scraper {
         }
         response.push_str(&format!("erth_waiting_time{{service=\"drivers_license\"}}\t\t{}\n", data.drivers_license_services.waiting_time_estimation));
         if let Some(tracked_waiting_time) = data.drivers_license_services.tracked_waiting_time {
-            response.push_str(&format!("erth_tracked_waiting_time{{service=\"drivers_license\"}}\t\t{}\n", tracked_waiting_time.as_secs()));
+            response.push_str(&format!("erth_tracked_waiting_time{{service=\"drivers_license\"}}\t\t{}\n", tracked_waiting_time.as_secs() / 60));
         }
 
         response.push_str("\n# Meta information\n");
