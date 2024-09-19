@@ -83,6 +83,8 @@ struct Scraper {
 
     /// Tracks currently open tickets to determine their waiting time
     ticket_tracker: HashMap<Ticket, Instant>,
+
+    last_tracked_waiting_time: [Option<Duration>; 2],
 }
 
 /// Serves queue data over http
@@ -205,6 +207,7 @@ impl Scraper {
         Scraper {
             cache: None,
             ticket_tracker: HashMap::new(),
+            last_tracked_waiting_time: [None; 2],
         }
     }
 
@@ -304,14 +307,16 @@ impl Scraper {
             return Err(String::from("not enough data blocks"));
         }
 
-        data_frames[0].tracked_waiting_time = self.update_tracker(
+        self.update_tracker(
             data_frames[0].last_called_ticket,
             data_frames[0].people_waiting,
             TicketType::B);
-        data_frames[1].tracked_waiting_time = self.update_tracker(
+        self.update_tracker(
             data_frames[1].last_called_ticket,
             data_frames[1].people_waiting,
             TicketType::F);
+        data_frames[0].tracked_waiting_time = self.last_tracked_waiting_time[0];
+        data_frames[1].tracked_waiting_time = self.last_tracked_waiting_time[1];
 
         Ok(DataFrame {
             citizen_services: data_frames[0].clone(),
@@ -326,23 +331,41 @@ impl Scraper {
     }
 
     // Update the integrated ticket waiting time tracker and return the latest waiting time
-    fn update_tracker(&mut self, ticket: Ticket, queue_length: usize, expected_ticket_type: TicketType) -> Option<Duration> {
+    fn update_tracker(&mut self, ticket: Ticket, queue_length: usize, expected_ticket_type: TicketType) {
         if ticket.0 == TicketType::None {
             // clean up ticket tracker after the numbers have reset
             self.ticket_tracker.retain(|k, _| k.0 != expected_ticket_type);
-            return None;
+            match expected_ticket_type {
+                TicketType::B => self.last_tracked_waiting_time[0] = None,
+                TicketType::F => self.last_tracked_waiting_time[1] = None,
+                TicketType::None => (),
+            }
+            return;
         } else if ticket.0 != expected_ticket_type {
             // ignore foreign tickets
-            return None;
+            return;
         }
 
-        let ret = self.ticket_tracker.get(&ticket)
-            .map(|i| Instant::now() - *i);
+        // get time for current ticket if applicable
+        let current_tracked = self.ticket_tracker.remove(&ticket)
+            .map(|i| Instant::now() - i);
+
+        if current_tracked.is_some() {
+            match expected_ticket_type {
+                TicketType::B => self.last_tracked_waiting_time[0] = current_tracked,
+                TicketType::F => self.last_tracked_waiting_time[1] = current_tracked,
+                TicketType::None => (),
+            }
+        } else if self.ticket_tracker.is_empty() {  // There is no waiting time if there aren't any tickets
+            match expected_ticket_type {
+                TicketType::B => self.last_tracked_waiting_time[0] = None,
+                TicketType::F => self.last_tracked_waiting_time[1] = None,
+                TicketType::None => (),
+            }
+        }
 
         let new_ticket = Ticket(ticket.0, ticket.1 + queue_length);
         self.ticket_tracker.entry(new_ticket).or_insert_with(|| Instant::now());
-
-        ret
     }
 }
 
