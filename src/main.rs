@@ -341,13 +341,14 @@ impl Scraper {
             }
         };
 
-        if ticket.0 != expected_ticket_type {
-            // ignore foreign tickets
-            return;
-        } else if ticket.0 == TicketType::None {
+        if ticket.0 == TicketType::None {
             // clean up ticket tracker after the numbers have reset
             self.ticket_tracker.retain(|k, _| k.0 != expected_ticket_type);
             *last_tracked_waiting_time = None;
+            return;
+        }
+        if ticket.0 != expected_ticket_type {
+            // ignore foreign tickets
             return;
         }
 
